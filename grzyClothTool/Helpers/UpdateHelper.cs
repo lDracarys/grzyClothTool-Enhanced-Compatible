@@ -186,6 +186,21 @@ public static class UpdateHelper
         return FileVersionInfo.GetVersionInfo(_exeLocation).FileVersion;
     }
 
+    // Real semantic comparison instead of string equality: a plain "!=" check treats ANY
+    // difference (including an older remote version, or a fork whose version doesn't match
+    // upstream's) as "an update is available", which is how downgrades/false-positives happen.
+    // Falls back to a plain string comparison if either value isn't a parseable version, so a
+    // malformed remote value degrades to the old (safe-ish) behavior instead of throwing.
+    private static bool IsNewerVersion(string latestVersion, string currentVersion)
+    {
+        if (Version.TryParse(latestVersion, out var latest) && Version.TryParse(currentVersion, out var current))
+        {
+            return latest > current;
+        }
+
+        return latestVersion != currentVersion;
+    }
+
     public async static Task CheckForUpdates()
     {
         string[] args = Environment.GetCommandLineArgs();
@@ -224,7 +239,7 @@ public static class UpdateHelper
                 return;
             }
 
-            if(latestVersion == currentVersion)
+            if (!IsNewerVersion(latestVersion, currentVersion))
             {
                 App.splashScreen.AddMessage("You're up to date!");
                 await Task.Delay(500, cts.Token);
@@ -260,7 +275,7 @@ public static class UpdateHelper
     {
         try
         {
-            string url = "https://raw.githubusercontent.com/grzybeek/grzyClothTool/master/grzyClothTool/grzyClothTool.csproj";
+            string url = "https://raw.githubusercontent.com/lDracarys/grzyClothTool-Enhanced-Compatible/v2-enhanced/grzyClothTool/grzyClothTool.csproj";
 
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             using HttpResponseMessage response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseContentRead);
@@ -282,7 +297,7 @@ public static class UpdateHelper
 
     private static async Task DownloadUpdate(string version, CancellationToken cancellationToken)
     {
-        string url = $"https://github.com/grzybeek/grzyClothTool/releases/download/v{version}/grzyClothTool.zip";
+        string url = $"https://github.com/lDracarys/grzyClothTool-Enhanced-Compatible/releases/download/v{version}/grzyClothTool.zip";
         string downloadZip = Path.Combine(_updateFolder, "grzyClothTool.zip");
 
         try

@@ -56,6 +56,28 @@ namespace grzyClothTool.Views
             }
         }
 
+        private string _originalLatestVersion;
+        public string OriginalLatestVersion
+        {
+            get => _originalLatestVersion;
+            set
+            {
+                _originalLatestVersion = value;
+                OnPropertyChanged(nameof(OriginalLatestVersion));
+            }
+        }
+
+        private List<string> _originalChangelogHighlights;
+        public List<string> OriginalChangelogHighlights
+        {
+            get => _originalChangelogHighlights;
+            set
+            {
+                _originalChangelogHighlights = value;
+                OnPropertyChanged(nameof(OriginalChangelogHighlights));
+            }
+        }
+
         private List<ToolInfo> _otherTools;
         public List<ToolInfo> OtherTools
         {
@@ -153,6 +175,16 @@ namespace grzyClothTool.Views
                 LatestVersion = "Unable to fetch version";
                 ChangelogHighlights = ["Failed to load changelog highlights"];
             }
+
+            try
+            {
+                await FetchOriginalLatestRelease();
+            }
+            catch
+            {
+                OriginalLatestVersion = "Unable to fetch version";
+                OriginalChangelogHighlights = ["Failed to load changelog highlights"];
+            }
         }
 
         private async Task FetchPatreons()
@@ -169,30 +201,48 @@ namespace grzyClothTool.Views
 
         private async Task FetchLatestRelease()
         {
-            var url = "https://api.github.com/repos/grzybeek/grzyClothTool/releases/latest";
+            var (version, highlights) = await FetchLatestReleaseFrom("lDracarys/grzyClothTool-Enhanced-Compatible");
+
+            await Dispatcher.InvokeAsync(() =>
+            {
+                LatestVersion = version;
+                ChangelogHighlights = highlights;
+            });
+        }
+
+        private async Task FetchOriginalLatestRelease()
+        {
+            var (version, highlights) = await FetchLatestReleaseFrom("grzybeek/grzyClothTool");
+
+            await Dispatcher.InvokeAsync(() =>
+            {
+                OriginalLatestVersion = version;
+                OriginalChangelogHighlights = highlights;
+            });
+        }
+
+        private static async Task<(string Version, List<string> Highlights)> FetchLatestReleaseFrom(string repo)
+        {
+            var url = $"https://api.github.com/repos/{repo}/releases/latest";
 
             App.httpClient.DefaultRequestHeaders.UserAgent.Clear();
             App.httpClient.DefaultRequestHeaders.Add("User-Agent", "grzyClothTool");
 
             var response = await App.httpClient.GetAsync(url).ConfigureAwait(false);
-            if (response.IsSuccessStatusCode)
+            if (!response.IsSuccessStatusCode)
             {
-                var content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-                var release = JsonSerializer.Deserialize<JsonElement>(content);
-                
-                await Dispatcher.InvokeAsync(() =>
-                {
-                    if (release.TryGetProperty("tag_name", out var tagName))
-                    {
-                        LatestVersion = tagName.GetString();
-                    }
-
-                    if (release.TryGetProperty("body", out var body))
-                    {
-                        ChangelogHighlights = ParseChangelogHighlights(body.GetString());
-                    }
-                });
+                return ("Unable to fetch version", ["Failed to load changelog highlights"]);
             }
+
+            var content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            var release = JsonSerializer.Deserialize<JsonElement>(content);
+
+            string version = release.TryGetProperty("tag_name", out var tagName) ? tagName.GetString() : "Unknown";
+            List<string> highlights = release.TryGetProperty("body", out var body)
+                ? ParseChangelogHighlights(body.GetString())
+                : ["No changelog available"];
+
+            return (version, highlights);
         }
 
         private static List<string> ParseChangelogHighlights(string changelogBody)
@@ -242,6 +292,22 @@ namespace grzyClothTool.Views
         }
 
         private void ViewChangelog_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "https://github.com/lDracarys/grzyClothTool-Enhanced-Compatible/releases",
+                    UseShellExecute = true
+                });
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to open changelog: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void ViewOriginalChangelog_Click(object sender, RoutedEventArgs e)
         {
             try
             {
