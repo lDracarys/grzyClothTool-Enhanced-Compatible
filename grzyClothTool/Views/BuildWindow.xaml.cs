@@ -83,6 +83,20 @@ namespace grzyClothTool.Views
             }
         }
 
+        private bool _buildEnhanced;
+        public bool BuildEnhanced
+        {
+            get => _buildEnhanced;
+            set
+            {
+                if (_buildEnhanced != value)
+                {
+                    _buildEnhanced = value;
+                    OnPropertyChanged(nameof(BuildEnhanced));
+                }
+            }
+        }
+
         private bool _isWarningVisible;
         public bool IsWarningVisible
         {
@@ -253,7 +267,7 @@ namespace grzyClothTool.Views
                 timer.Start();
 
                 var progress = new Progress<int>(value => ProgressValue += value);
-                var buildHelper = new BuildResourceHelper(ProjectName, BuildPath, progress, _resourceType, SplitAddons);
+                var buildHelper = new BuildResourceHelper(ProjectName, BuildPath, progress, _resourceType, SplitAddons, BuildEnhanced);
 
                 await Task.Run(() => BuildResource(buildHelper)); // moved out of ui thread, so users don't think tool stopped responding
 
@@ -303,6 +317,19 @@ namespace grzyClothTool.Views
                 {
                     split_addons.IsEnabled = MainWindow.AddonManager.Addons.Count > 1;
                 }
+            }
+        }
+
+        private void BuildFormatRadioButton_ChangedEvent(object sender, RoutedEventArgs e)
+        {
+            if (sender is ModernLabelRadioButton radioButton && radioButton.IsChecked == true)
+            {
+                BuildEnhanced = radioButton.Label switch
+                {
+                    "Legacy" => false,
+                    "Enhanced" => true,
+                    _ => throw new NotImplementedException()
+                };
             }
         }
 

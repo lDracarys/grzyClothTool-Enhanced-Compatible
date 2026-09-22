@@ -12,7 +12,7 @@
         Closing="Window_Closing"
         Title="grzyClothTool - Build resource"
         Background="{DynamicResource Brush50}"
-        Height="550"
+        Height="630"
         Width="500">
     <Grid>
         <Grid.RowDefinitions>
@@ -45,7 +45,25 @@
                 </StackPanel>
             </GroupBox>
 
-            <c:ModernLabelTextBox 
+            <GroupBox Header="Select build format" Margin="15,0,15,15" Style="{DynamicResource FixedGroupBox}">
+                <StackPanel>
+                    <c:ModernLabelRadioButton
+                        Margin="5,5,5,0"
+                        GroupName="buildFormat"
+                        Label="Legacy"
+                        IsChecked="True"
+                        MyBtnSelectEvent="BuildFormatRadioButton_ChangedEvent"
+                    />
+                    <c:ModernLabelRadioButton
+                        Margin="5,1,5,5"
+                        GroupName="buildFormat"
+                        Label="Enhanced"
+                        MyBtnSelectEvent="BuildFormatRadioButton_ChangedEvent"
+                    />
+                </StackPanel>
+            </GroupBox>
+
+            <c:ModernLabelTextBox
                 x:Name="name"
                 Label="Project name"
                 Margin="15,15,15,0"

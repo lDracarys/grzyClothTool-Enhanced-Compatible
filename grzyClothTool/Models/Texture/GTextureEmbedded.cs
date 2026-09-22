@@ -205,7 +205,10 @@ public class GTextureEmbedded : INotifyPropertyChanged
 
             var fileBytes = await FileHelper.ReadAllBytesAsync(SourceDrawablePath);
             var yddFile = new YddFile();
-            await yddFile.LoadAsync(fileBytes);
+            using (CWHelper.ScopedYddGen9(SourceDrawablePath))
+            {
+                await yddFile.LoadAsync(fileBytes);
+            }
 
             var texture = yddFile.Drawables?
                 .FirstOrDefault()?

@@ -32,10 +32,13 @@ namespace CodeWalker.GameFiles
 
         public volatile bool IsInited = false;
 
-        public void Init(string folder, Action<string> updateStatus, Action<string> errorLog, bool rootOnly = false, bool buildIndex = true)
+        public static bool IsGen9 { get; set; } //not ideal for this to be static, but it's most convenient for ResourceData
+
+        public void Init(string folder, bool gen9, Action<string> updateStatus, Action<string> errorLog, bool rootOnly = false, bool buildIndex = true)
         {
             UpdateStatus = updateStatus;
             ErrorLog = errorLog;
+            IsGen9 = gen9;
 
             string replpath = folder + "\\";
             var sopt = rootOnly ? SearchOption.TopDirectoryOnly : SearchOption.AllDirectories;
@@ -98,10 +101,11 @@ namespace CodeWalker.GameFiles
             IsInited = true;
         }
 
-        public void Init(List<RpfFile> allRpfs)
+        public void Init(List<RpfFile> allRpfs, bool gen9)
         {
             //fast init used by RPF explorer's File cache
             AllRpfs = allRpfs;
+            IsGen9 = gen9;
 
             BaseRpfs = new List<RpfFile>();
             ModRpfs = new List<RpfFile>();
@@ -495,6 +499,29 @@ namespace CodeWalker.GameFiles
             {
                 JenkIndex.Ensure(i.ToString("00"));
             }
+
+
+            // Assembly.GetExecutingAssembly().Location can be null/empty in a single-file publish (the
+            // assembly is bundled in memory, not present as a physical DLL on disk), which crashed
+            // Path.Combine with an ArgumentNullException. AppContext.BaseDirectory always points at the
+            // folder the app is actually running from (the exe's folder), single-file or not.
+            var dir = AppContext.BaseDirectory;
+            var fpath = Path.Combine(dir, "strings.txt");
+            if (File.Exists(fpath))
+            {
+                var lines = File.ReadAllLines(fpath);
+                if (lines != null)
+                {
+                    foreach (var line in lines)
+                    {
+                        var str = line?.Trim();
+                        if (string.IsNullOrEmpty(str)) continue;
+                        if (str.StartsWith("//")) continue;
+                        JenkIndex.Ensure(str);
+                    }
+                }
+            }
+
         }
 
     }

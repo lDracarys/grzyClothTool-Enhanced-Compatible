@@ -95,8 +95,21 @@ namespace CodeWalker
             if(ValidateGTAFolder(folder))
             {
                 CurrentGTAFolder = folder;
-                Settings.Default.GTAFolder = folder;
-                Settings.Default.Save();
+                try
+                {
+                    // Best-effort: this WinForms ApplicationSettingsBase store keys its user.config
+                    // location off the running assembly's identity/path, which is unstable across
+                    // single-file publishes - so this can throw or silently no-op there. CurrentGTAFolder
+                    // is already updated above regardless, and grzyClothTool additionally persists the
+                    // folder itself (PersistentSettingsHelper.GtaFolder, a plain JSON file with no such
+                    // dependency) so the setting survives even when this call fails.
+                    Settings.Default.GTAFolder = folder;
+                    Settings.Default.Save();
+                }
+                catch
+                {
+                    // Ignored - see comment above.
+                }
                 return true;
             }
 

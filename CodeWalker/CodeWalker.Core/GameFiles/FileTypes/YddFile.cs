@@ -27,13 +27,13 @@ namespace CodeWalker.GameFiles
         {
             //direct load from a raw, compressed ydd file
 
-            RpfFile.LoadResourceFile(this, data, 165);
+            RpfFile.LoadResourceFile(this, data, (uint)GetVersion(RpfManager.IsGen9));
 
             Loaded = true;
         }
         public async Task LoadAsync(byte[] data)
         {
-            await RpfFile.LoadResourceFileAsync(this, data, 165);
+            await RpfFile.LoadResourceFileAsync(this, data, (uint)GetVersion(RpfManager.IsGen9));
 
             Loaded = true;
         }
@@ -51,6 +51,21 @@ namespace CodeWalker.GameFiles
             }
 
             ResourceDataReader rd = new ResourceDataReader(resentry, data);
+
+            if (rd.IsGen9)
+            {
+                switch (resentry.Version)
+                {
+                    case 159:
+                        break;
+                    case 165:
+                        rd.IsGen9 = false;
+                        break;
+                    default:
+                        break;
+                }
+            }
+
 
             DrawableDict = rd.ReadBlock<DrawableDictionary>();
 
@@ -103,9 +118,24 @@ namespace CodeWalker.GameFiles
 
         public byte[] Save()
         {
-            byte[] data = ResourceBuilder.Build(DrawableDict, 165); //ydd is type/version 165...
+            var drawables = DrawableDict?.Drawables?.data_items;
+            var gen9 = RpfManager.IsGen9;
+            if (gen9 && (drawables != null))
+            {
+                foreach (var drawable in drawables)
+                {
+                    drawable?.EnsureGen9();
+                }
+            }
+
+            byte[] data = ResourceBuilder.Build(DrawableDict, GetVersion(gen9), true, gen9);
 
             return data;
+        }
+
+        public int GetVersion(bool gen9)
+        {
+            return gen9 ? 159 : 165;
         }
 
     }

@@ -114,15 +114,17 @@ namespace CodeWalker.GameFiles
         public bool LoadAudio = true;
         private bool PreloadedMode = false;
 
+        private bool GTAGen9;
         private string GTAFolder;
         private string ExcludeFolders;
 
-        public GameFileCache(long size, double cacheTime, string folder, string dlc, bool mods, string excludeFolders)
+        public GameFileCache(long size, double cacheTime, string folder, string dlc, bool mods, string excludeFolders, bool gen9 = false)
         {
             mainCache = new Cache<GameFileCacheKey, GameFile>(size, cacheTime);//2GB is good as default
             SelectedDlc = dlc;
             EnableDlc = !string.IsNullOrEmpty(SelectedDlc);
             EnableMods = false;
+            GTAGen9 = gen9;
             GTAFolder = folder;
             ExcludeFolders = excludeFolders;
         }
@@ -156,7 +158,7 @@ namespace CodeWalker.GameFiles
                 RpfMan.ExcludePaths = GetExcludePaths();
                 RpfMan.EnableMods = EnableMods;
                 RpfMan.BuildExtendedJenkIndex = BuildExtendedJenkIndex;
-                RpfMan.Init(GTAFolder, UpdateStatus, ErrorLog);//, true);
+                RpfMan.Init(GTAFolder, GTAGen9, UpdateStatus, ErrorLog);//, true);
 
 
                 InitGlobal();
@@ -2144,6 +2146,111 @@ namespace CodeWalker.GameFiles
         }
 
 
+        public static Dictionary<MetaHash, ShaderGen9XmlDataCollection> ShadersGen9ConversionData;
+        public static void EnsureShadersGen9ConversionData()
+        {
+            if (ShadersGen9ConversionData != null) return;
+
+            // Assembly.Location can be null/empty in a single-file publish (the assembly is bundled
+            // in memory, not present as a physical DLL on disk), which crashed Path.GetDirectoryName
+            // with an ArgumentNullException. AppContext.BaseDirectory always points at the folder the
+            // app is actually running from (the exe's folder), single-file or not.
+            var dir = AppContext.BaseDirectory;
+            var fpath = Path.Combine(dir, "ShadersGen9Conversion.xml");
+            if (File.Exists(fpath) == false) throw new Exception("Unable to load ShadersGen9Conversion.xml");//where's the XML file huh?
+            var gen9xml = File.ReadAllText(fpath);
+            var xdoc = new XmlDocument();
+            xdoc.LoadXml(gen9xml);
+            var shaders = xdoc.SelectNodes("ShadersGen9Conversion/Item");
+            var dict = new Dictionary<MetaHash, ShaderGen9XmlDataCollection>();
+            var infos = new List<ShaderParamInfoG9>();
+            var svdict = new Dictionary<byte, byte>();
+            foreach (XmlNode shader in shaders)
+            {
+                infos.Clear();
+                svdict.Clear();
+
+                var name = Xml.GetChildInnerText(shader, "Name")?.ToLowerInvariant();
+                var hash = new MetaHash(JenkHash.GenHash(name));
+                var dc = new ShaderGen9XmlDataCollection();
+                dc.Name = hash;
+                dc.BufferSizes = Xml.GetChildRawIntArray(shader, "BufferSizes");
+                dc.ParamsMapLegacyToGen9 = new Dictionary<MetaHash, MetaHash>();
+                dc.ParamsMapGen9ToLegacy = new Dictionary<MetaHash, MetaHash>();
+
+                var pnodes = shader.SelectNodes("Parameters/Item");
+                foreach (XmlNode p in pnodes)
+                {
+                    var ptype = Xml.GetStringAttribute(p, "type");
+                    var pname = Xml.GetStringAttribute(p, "name")?.ToLowerInvariant();
+                    var pnameold = Xml.GetStringAttribute(p, "old")?.ToLowerInvariant();
+                    var phash = JenkHash.GenHash(pname);
+                    var phashold = JenkHash.GenHash(pnameold);
+                    if (phash != 0)
+                    {
+                        if (pname.StartsWith("hash_"))
+                        {
+                            phash = (MetaHash)Convert.ToUInt32(pname.Substring(5), 16);
+                        }
+                        else
+                        {
+                            JenkIndex.Ensure(pname);
+                        }
+                    }
+                    Enum.TryParse<ShaderParamTypeG9>(ptype, out var pt);
+                    var ps = new ShaderParamInfoG9();
+                    ps.Name = phash;
+                    ps.Type = pt;
+                    switch (pt)
+                    {
+                        case ShaderParamTypeG9.Texture: 
+                            ps.TextureIndex = (byte)Xml.GetIntAttribute(p, "index"); 
+                            break;
+                        case ShaderParamTypeG9.Unknown: 
+                            ps.SamplerIndex = (byte)Xml.GetIntAttribute(p, "index"); 
+                            break;
+                        case ShaderParamTypeG9.Sampler: 
+                            ps.SamplerIndex = (byte)Xml.GetIntAttribute(p, "index"); 
+                            svdict[ps.SamplerIndex] = (byte)Xml.GetIntAttribute(p, "sampler"); 
+                            break;
+                        case ShaderParamTypeG9.CBuffer: 
+                            ps.CBufferIndex = (byte)Xml.GetIntAttribute(p, "buffer"); 
+                            ps.ParamLength = (ushort)Xml.GetUIntAttribute(p, "length"); 
+                            ps.ParamOffset = (ushort)Xml.GetUIntAttribute(p, "offset");
+                            break;
+                    }
+                    infos.Add(ps);
+
+                    if ((phash != 0) && (phashold != 0))
+                    {
+                        dc.ParamsMapLegacyToGen9[phashold] = phash;
+                        dc.ParamsMapGen9ToLegacy[phash] = phashold;
+                    }
+
+                }
+                dc.ParamInfos = infos.ToArray();
+
+                var scnt = 0;
+                foreach (var kvp in svdict) if (kvp.Key >= scnt) scnt = kvp.Key + 1;
+                var svals = new byte[scnt];
+                foreach (var kvp in svdict) svals[kvp.Key] = kvp.Value;
+                dc.SamplerValues = svals;
+
+                dict[hash] = dc;
+            }
+
+            ShadersGen9ConversionData = dict;
+
+        }
+        public class ShaderGen9XmlDataCollection
+        {
+            public MetaHash Name;
+            public int[] BufferSizes;
+            public byte[] SamplerValues;
+            public ShaderParamInfoG9[] ParamInfos;
+            public Dictionary<MetaHash, MetaHash> ParamsMapGen9ToLegacy;
+            public Dictionary<MetaHash, MetaHash> ParamsMapLegacyToGen9;
+        }
         private class ShaderXmlDataCollection
         {
             public MetaHash Name { get; set; }

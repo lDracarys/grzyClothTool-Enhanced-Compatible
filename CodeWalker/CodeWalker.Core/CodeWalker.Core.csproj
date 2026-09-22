@@ -19,4 +19,10 @@
     <Resource Include="Resources\magic.dat" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Update="ShadersGen9Conversion.xml">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
 </Project>

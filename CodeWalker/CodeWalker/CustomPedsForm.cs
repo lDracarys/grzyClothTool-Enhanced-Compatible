@@ -592,6 +592,26 @@ namespace CodeWalker
                     LogError("Failed to initialize game file cache: " + ex.Message);
                     LogError("GTA V installation may be corrupted or incomplete. 3D Preview disabled.");
                     UpdateStatus("Error: GTA V files not found or corrupted. 3D Preview unavailable.");
+                    try
+                    {
+                        // Full exception detail (including stack trace) isn't otherwise visible anywhere -
+                        // LogError above only writes to this form's own hidden ConsoleTextBox. Write it to
+                        // a plain text file next to the exe so it can actually be inspected after the fact.
+                        var logPath = Path.Combine(AppContext.BaseDirectory, "CustomPedsForm_GameFileCacheInit_error.log");
+                        var entry = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] GTAFolder.CurrentGTAFolder = '{GTAFolder.CurrentGTAFolder}'\n" +
+                                    $"Exception: {ex.GetType().Name}: {ex.Message}\n" +
+                                    $"StackTrace:\n{ex.StackTrace}\n";
+                        if (ex.InnerException != null)
+                        {
+                            entry += $"Inner Exception: {ex.InnerException.GetType().Name}: {ex.InnerException.Message}\nInner StackTrace:\n{ex.InnerException.StackTrace}\n";
+                        }
+                        entry += new string('-', 80) + "\n";
+                        File.AppendAllText(logPath, entry);
+                    }
+                    catch
+                    {
+                        // best-effort logging only
+                    }
                     running = false;
                     return;
                 }

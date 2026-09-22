@@ -320,7 +320,10 @@ public class GTexture : INotifyPropertyChanged
         if (extension == ".ytd")
         {
             var ytdFile = new YtdFile();
-            await ytdFile.LoadAsync(bytes);
+            using (CWHelper.ScopedYtdGen9(path))
+            {
+                await ytdFile.LoadAsync(bytes);
+            }
 
             if (ytdFile.TextureDict.Textures.Count == 0)
             {

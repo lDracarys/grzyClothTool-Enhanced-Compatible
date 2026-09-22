@@ -29,7 +29,7 @@
   <ItemGroup>
     <PackageReference Include="Dirkster.AvalonDock" Version="4.72.1" />
     <PackageReference Include="Dirkster.AvalonDock.Themes.VS2013" Version="4.72.1" />
-    <PackageReference Include="Magick.NET-Q16-AnyCPU" Version="14.9.1" />
+    <PackageReference Include="Magick.NET-Q16-AnyCPU" Version="14.17.1" />
     <PackageReference Include="Material.Icons.WPF" Version="2.4.1" />
     <PackageReference Include="Microsoft.Extensions.Primitives" Version="10.0.0" />
     <PackageReference Include="Sentry" Version="5.16.2" />
@@ -52,6 +52,16 @@
     <Reference Include="CodeWalker.Core">
       <HintPath>..\packages\CodeWalker.Core.dll</HintPath>
     </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <!-- CodeWalker.Core.GameFileCache.EnsureShadersGen9ConversionData() loads this file next to the
+         running assembly at runtime (Assembly.GetExecutingAssembly().Location). It's only a build
+         output of CodeWalker.Core.csproj (copied to ..\packages\), so it must also be copied here
+         explicitly - MSBuild doesn't do this automatically for a Reference's non-DLL build outputs. -->
+    <None Include="..\packages\ShadersGen9Conversion.xml">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>ShadersGen9Conversion.xml</Link>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <Compile Update="Controls\Custom\CustomButton.xaml.cs">

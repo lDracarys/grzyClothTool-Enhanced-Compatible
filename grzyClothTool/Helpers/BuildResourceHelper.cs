@@ -1,9 +1,10 @@
 ﻿using CodeWalker.GameFiles;
-using CodeWalker.GameFiles;
+using CodeWalker.Core.Utils;
 using CodeWalker.Utils;
 using grzyClothTool.Constants;
 using grzyClothTool.Models;
 using grzyClothTool.Models.Drawable;
+using grzyClothTool.Models.Texture;
 using grzyClothTool.Views;
 using System;
 using System.Collections.Generic;
@@ -26,6 +27,7 @@ public class BuildResourceHelper
     private string _buildPath;
     private readonly string _baseBuildPath;
     private readonly bool _splitAddons;
+    private readonly bool _buildEnhanced;
     private readonly IProgress<int> _progress;
 
     private readonly string _buildTempFolderPath;
@@ -34,7 +36,7 @@ public class BuildResourceHelper
     private readonly List<string> firstPersonFiles = [];
     private BuildResourceType _buildResourceType;
 
-    public BuildResourceHelper(string name, string path, IProgress<int> progress, BuildResourceType resourceType, bool splitAddons)
+    public BuildResourceHelper(string name, string path, IProgress<int> progress, BuildResourceType resourceType, bool splitAddons, bool buildEnhanced = false)
     {
         _projectName = name;
         _buildPath = path;
@@ -42,12 +44,44 @@ public class BuildResourceHelper
         _progress = progress;
         _buildResourceType = resourceType;
         _splitAddons = splitAddons;
+        _buildEnhanced = buildEnhanced;
 
         shouldUseNumber = MainWindow.AddonManager.Addons.Count > 1;
 
         var buildParentDir = Path.GetDirectoryName(_baseBuildPath);
         _buildTempFolderPath = Path.Combine(buildParentDir, "buildtemp");
         Directory.CreateDirectory(_buildTempFolderPath);
+    }
+
+    /// <summary>
+    /// When Enhanced build is selected, converts a resource file's bytes to gen9 (Enhanced) format
+    /// using CodeWalker's Gen9Converter, in-memory - no temp files/RPFs involved.
+    /// Files already in gen9 format are returned unchanged. When Enhanced build is not selected,
+    /// returns the original bytes untouched (Legacy build behaves exactly as before).
+    /// </summary>
+    private byte[] ConvertToEnhancedIfNeeded(byte[] data, string extension)
+    {
+        if (!_buildEnhanced || data == null)
+        {
+            return data;
+        }
+
+        try
+        {
+            // Goes through CWHelper's shared lock, same as every other RpfManager.IsGen9 call site -
+            // this can run concurrently (per-drawable/per-texture) alongside preview loads and other
+            // build tasks, and the flag is a single global static with no per-thread context.
+            using (CWHelper.ScopedGen9(true))
+            {
+                var result = Gen9Converter.TryConvert(data, extension, msg => LogHelper.Log(msg), extension, copyunconverted: true, out _);
+                return result ?? data;
+            }
+        }
+        catch (Exception ex)
+        {
+            LogHelper.Log($"Gen9 conversion failed for a '{extension}' file, keeping original (Legacy) data: {ex.Message}", Views.LogType.Warning);
+            return data;
+        }
     }
 
     public void SetAddon(Addon addon)
@@ -139,6 +173,7 @@ public class BuildResourceHelper
                             LogHelper.Log($"Skipping corrupted texture: {t.DisplayName}", LogType.Warning);
                             continue;
                         }
+                        txtBytes = ConvertToEnhancedIfNeeded(txtBytes, ".ytd");
                         fileOperations.Add(File.WriteAllBytesAsync(finalTexPath, txtBytes));
                     }
                     else
@@ -151,12 +186,13 @@ public class BuildResourceHelper
                                 LogHelper.Log($"Skipping corrupted texture: {t.DisplayName}", LogType.Warning);
                                 continue;
                             }
-                        } 
+                        }
                         else
                         {
                             txtBytes = await FileHelper.ReadAllBytesAsync(t.FullFilePath);
                         }
 
+                        txtBytes = ConvertToEnhancedIfNeeded(txtBytes, ".ytd");
                         fileOperations.Add(File.WriteAllBytesAsync(finalTexPath, txtBytes));
                     }
                 }
@@ -406,6 +442,14 @@ public class BuildResourceHelper
                 var tempYddPath = yddPathsDict[d];
                 fileOperations.Add(FileHelper.CopyAsync(tempYddPath, Path.Combine(folderPath, $"{d.Name}{Path.GetExtension(d.FullFilePath)}")));
 
+                if (!string.IsNullOrEmpty(d.ClothPhysicsPath))
+                {
+                    // .yld cloth physics files are always version 8 in CodeWalker regardless of Legacy vs
+                    // Enhanced (RpfManager.IsGen9 doesn't affect YldFile at all), so a raw copy is correct
+                    // for both build formats - no gen9 conversion needed here.
+                    fileOperations.Add(FileHelper.CopyAsync(d.FullClothPhysicsPath, Path.Combine(folderPath, $"{d.Name}{Path.GetExtension(d.ClothPhysicsPath)}")));
+                }
+
                 foreach(var t in d.Textures)
                 {
                     var buildName = RemoveInvalidChars(t.GetBuildName());
@@ -419,8 +463,16 @@ public class BuildResourceHelper
                             LogHelper.Log($"Skipping corrupted texture: {t.DisplayName}", LogType.Warning);
                             continue;
                         }
+                        optimizedBytes = ConvertToEnhancedIfNeeded(optimizedBytes, ".ytd");
                         fileOperations.Add(File.WriteAllBytesAsync(finalTexPath, optimizedBytes));
-                    } 
+                    }
+                    else if (_buildEnhanced)
+                    {
+                        // Can't just copy the file as-is when Enhanced build is selected - it needs to
+                        // go through the converter, so read+convert+write instead of a raw file copy.
+                        var texBytes = ConvertToEnhancedIfNeeded(await FileHelper.ReadAllBytesAsync(t.FullFilePath), ".ytd");
+                        fileOperations.Add(File.WriteAllBytesAsync(finalTexPath, texBytes));
+                    }
                     else
                     {
                         fileOperations.Add(FileHelper.CopyAsync(t.FullFilePath, finalTexPath));
@@ -774,8 +826,19 @@ public class BuildResourceHelper
                 var tempYddPath = yddPathsDict[d];
                 var drawableBytes = File.ReadAllBytes(tempYddPath);
 
-                RpfDirectoryEntry folder = d.IsProp ? propsFolder : componentsFolder;            
+                RpfDirectoryEntry folder = d.IsProp ? propsFolder : componentsFolder;
                 RpfFile.CreateFile(folder, $"{d.Name}{Path.GetExtension(d.FullFilePath)}", drawableBytes);
+
+                if (!string.IsNullOrEmpty(d.ClothPhysicsPath))
+                {
+                    // .yld cloth physics files are always version 8 in CodeWalker regardless of Legacy vs
+                    // Enhanced (RpfManager.IsGen9 doesn't affect YldFile at all), so a raw copy of the
+                    // bytes is correct for both build formats - no gen9 conversion needed here. The ymt's
+                    // CPVClothComponentData.ownsCloth flag is already set from ClothPhysicsPath being non-
+                    // empty (see BuildYMT below), so without this file the game expects a .yld that isn't there.
+                    var clothBytes = File.ReadAllBytes(d.FullClothPhysicsPath);
+                    RpfFile.CreateFile(folder, $"{d.Name}{Path.GetExtension(d.ClothPhysicsPath)}", clothBytes);
+                }
 
                 foreach (var t in d.Textures)
                 {
@@ -789,11 +852,12 @@ public class BuildResourceHelper
                             LogHelper.Log($"Skipping corrupted texture: {t.DisplayName}", LogType.Warning);
                             continue;
                         }
+                        optimizedBytes = ConvertToEnhancedIfNeeded(optimizedBytes, ".ytd");
                         RpfFile.CreateFile(folder, $"{displayName}{Path.GetExtension(t.FullFilePath)}", optimizedBytes);
                     }
                     else
                     {
-                        var texBytes = File.ReadAllBytes(t.FullFilePath);
+                        var texBytes = ConvertToEnhancedIfNeeded(File.ReadAllBytes(t.FullFilePath), ".ytd");
                         RpfFile.CreateFile(folder, $"{displayName}{Path.GetExtension(t.FullFilePath)}", texBytes);
                     }
                 }
@@ -1269,26 +1333,42 @@ public class BuildResourceHelper
             string uniqueFileName = $"{dr.Id}_{Path.GetFileName(inputPath)}";
             string outputPath = Path.Combine(_buildTempFolderPath, uniqueFileName);
 
-            // If drawable is encrypted or has no embedded textures, just copy the original file without processing
-            if (dr?.IsEncrypted == true || dr.Details?.EmbeddedTextures == null || dr.Details.EmbeddedTextures.Count == 0 || dr.Details.EmbeddedTextures.All(x => x.Value.Details.Width == 0))
+            // If drawable is encrypted, just copy the original file without processing (can't touch its
+            // bytes at all - not even to convert to gen9 - since we don't have the encryption key).
+            if (dr?.IsEncrypted == true)
             {
+                if (_buildEnhanced)
+                {
+                    LogHelper.Log($"'{dr.Name}' is encrypted and can't be converted to Enhanced (gen9) - keeping it in its original (Legacy) format.", LogType.Warning);
+                }
                 return inputPath;
             }
 
-            var texturesToProcess = dr.Details.EmbeddedTextures.Where(kvp =>
-            {
-                var embeddedDto = kvp.Value;
-                return embeddedDto.IsOptimizedDuringBuild || embeddedDto.HasReplacement || embeddedDto.OriginalName != embeddedDto.Details.Name;
-            });
+            var hasEmbeddedTextures = dr.Details?.EmbeddedTextures != null && dr.Details.EmbeddedTextures.Count > 0 && !dr.Details.EmbeddedTextures.All(x => x.Value.Details.Width == 0);
 
-            if (!texturesToProcess.Any())
+            IEnumerable<KeyValuePair<GDrawableDetails.EmbeddedTextureType, GTextureEmbedded>> texturesToProcess = hasEmbeddedTextures
+                ? dr.Details.EmbeddedTextures.Where(kvp =>
+                {
+                    var embeddedDto = kvp.Value;
+                    return embeddedDto.IsOptimizedDuringBuild || embeddedDto.HasReplacement || embeddedDto.OriginalName != embeddedDto.Details.Name;
+                })
+                : Enumerable.Empty<KeyValuePair<GDrawableDetails.EmbeddedTextureType, GTextureEmbedded>>();
+
+            // With a Legacy build (the default), and nothing to reprocess, just copy the original file
+            // untouched - same behavior as before Enhanced build support existed.
+            // With an Enhanced build, we still need to go through Save() below (even with no embedded
+            // texture changes) so the file gets converted to gen9 format.
+            if (!_buildEnhanced && !texturesToProcess.Any())
             {
                 return inputPath;
             }
 
             var fileBytes = await FileHelper.ReadAllBytesAsync(inputPath);
             var yddFile = new YddFile();
-            await yddFile.LoadAsync(fileBytes);
+            using (CWHelper.ScopedYddGen9(inputPath))
+            {
+                await yddFile.LoadAsync(fileBytes);
+            }
 
             var drawable = yddFile.Drawables.FirstOrDefault()
                           ?? throw new InvalidOperationException($"No drawables found in YDD: {inputPath}");
@@ -1468,8 +1548,30 @@ public class BuildResourceHelper
                 }
             }
 
-            byte[] outputBytes = yddFile.Save();
-            var testload = new YddFile();
+            byte[] outputBytes;
+            if (_buildEnhanced)
+            {
+                // yddFile.Save() must run with RpfManager.IsGen9 set to whatever this drawable's SOURCE
+                // file actually is (gen8 or gen9 - CWHelper.IsYddGen9 detects this from inputPath's own
+                // RSC7 header), not an arbitrary forced value: a project can contain a mix of Legacy and
+                // already-Enhanced source drawables, and Save() must write the data back out consistent
+                // with the in-memory state it was loaded with, or the resource header ends up mismatched
+                // with the actual bytes. Gen9Converter.TryConvert (inside ConvertToEnhancedIfNeeded) then
+                // reloads these bytes with IsGen9 forced true and checks the file's own version number to
+                // decide "needs conversion" vs "already gen9" - if we hand it a gen8-source file that was
+                // saved with the wrong flag, its version can end up looking like it's already gen9 (or the
+                // load can fail), so it gets returned unconverted and silently stays in Legacy format.
+                byte[] savedBytes;
+                using (CWHelper.ScopedYddGen9(inputPath))
+                {
+                    savedBytes = yddFile.Save();
+                }
+                outputBytes = ConvertToEnhancedIfNeeded(savedBytes, ".ydd");
+            }
+            else
+            {
+                outputBytes = yddFile.Save();
+            }
 
             await File.WriteAllBytesAsync(outputPath, outputBytes);
 

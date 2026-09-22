@@ -311,9 +311,8 @@ namespace CodeWalker.GameFiles
                     {
                         RpfBinaryFileEntry binentry = entry as RpfBinaryFileEntry;
 
-                        //search all the sub resources for YSC files. (recurse!)
-                        string lname = binentry.NameLower;
-                        if (lname.EndsWith(".rpf") && binentry.Path.Length < 5000) // a long path is most likely an attempt to crash CW, so skip it
+                        var lname = binentry.NameLower;
+                        if (lname.EndsWith(".rpf") && IsValidPath(binentry.Path))
                         {
                             br.BaseStream.Position = StartPos + ((long)binentry.FileOffset * 512);
 
@@ -967,155 +966,6 @@ namespace CodeWalker.GameFiles
             }
         }
 
-        public static RpfFileEntry CreateFile(RpfDirectoryEntry dir, string name, byte[] data, bool overwrite = true)
-        {
-            string namel = name.ToLowerInvariant();
-            if (overwrite)
-            {
-                foreach (var exfile in dir.Files)
-                {
-                    if (exfile.NameLower == namel)
-                    {
-                        //file already exists. delete the existing one first!
-                        //this should probably be optimised to just replace the existing one...
-                        //TODO: investigate along with ExploreForm.ReplaceSelected()
-                        DeleteEntry(exfile);
-                        break;
-                    }
-                }
-            }
-            //else fail if already exists..? items with the same name allowed?
-
-            RpfFile parent = dir.File;
-            string fpath = parent.GetPhysicalFilePath();
-            string rpath = dir.Path + "\\" + namel;
-            if (!File.Exists(fpath))
-            {
-                throw new Exception("Root RPF file " + fpath + " does not exist!");
-            }
-
-
-            RpfFileEntry entry = null;
-            uint len = (uint)data.Length;
-
-
-            bool isrpf = false;
-            bool isawc = false;
-            uint hdr = 0;
-            if (len >= 16)
-            {
-                hdr = BitConverter.ToUInt32(data, 0);
-            }
-
-            if (hdr == 0x37435352) //'RSC7'
-            {
-                //RSC header is present... import as resource
-                var rentry = new RpfResourceFileEntry();
-                var version = BitConverter.ToUInt32(data, 4);
-                rentry.SystemFlags = BitConverter.ToUInt32(data, 8);
-                rentry.GraphicsFlags = BitConverter.ToUInt32(data, 12);
-                rentry.FileSize = len;
-                if (len >= 0xFFFFFF)
-                {
-                    //just....why
-                    //FileSize = (buf[7] << 0) | (buf[14] << 8) | (buf[5] << 16) | (buf[2] << 24);
-                    data[7] = (byte)((len >> 0) & 0xFF);
-                    data[14] = (byte)((len >> 8) & 0xFF);
-                    data[5] = (byte)((len >> 16) & 0xFF);
-                    data[2] = (byte)((len >> 24) & 0xFF);
-                }
-
-                entry = rentry;
-            }
-
-            if (namel.EndsWith(".rpf") && (hdr == 0x52504637)) //'RPF7'
-            {
-                isrpf = true;
-            }
-            if (namel.EndsWith(".awc"))
-            {
-                isawc = true;
-            }
-
-            if (entry == null)
-            {
-                //no RSC7 header present, import as a binary file.
-                var compressed = (isrpf || isawc) ? data : CompressBytes(data);
-                var bentry = new RpfBinaryFileEntry();
-                bentry.EncryptionType = 0;//TODO: binary encryption
-                bentry.IsEncrypted = false;
-                bentry.FileUncompressedSize = (uint)data.Length;
-                bentry.FileSize = (isrpf || isawc) ? 0 : (uint)compressed.Length;
-                if (bentry.FileSize > 0xFFFFFF)
-                {
-                    bentry.FileSize = 0;
-                    compressed = data;
-                    //can't compress?? since apparently FileSize>0 means compressed...
-                }
-                data = compressed;
-                entry = bentry;
-            }
-
-            entry.Parent = dir;
-            entry.File = parent;
-            entry.Path = rpath;
-            entry.Name = name;
-            entry.NameLower = name.ToLowerInvariant();
-            entry.NameHash = JenkHash.GenHash(name);
-            entry.ShortNameHash = JenkHash.GenHash(entry.GetShortNameLower());
-
-
-
-
-            foreach (var exfile in dir.Files)
-            {
-                if (exfile.NameLower == entry.NameLower)
-                {
-                    throw new Exception("File \"" + entry.Name + "\" already exists!");
-                }
-            }
-
-
-
-            dir.Files.Add(entry);
-
-
-            using (var fstream = File.Open(fpath, FileMode.Open, FileAccess.ReadWrite))
-            {
-                using (var bw = new BinaryWriter(fstream))
-                {
-                    parent.InsertFileSpace(bw, entry);
-                    long bbeg = parent.StartPos + (entry.FileOffset * 512);
-                    long bend = bbeg + (GetBlockCount(entry.GetFileSize()) * 512);
-                    fstream.Position = bbeg;
-                    fstream.Write(data, 0, data.Length);
-                    WritePadding(fstream, bend); //write 0's until the end of the block.
-                }
-            }
-
-
-            if (isrpf)
-            {
-                //importing a raw RPF archive. create the new RpfFile object, and read its headers etc.
-                RpfFile file = new RpfFile(name, rpath, data.LongLength);
-                file.Parent = parent;
-                file.ParentFileEntry = entry as RpfBinaryFileEntry;
-                file.StartPos = parent.StartPos + (entry.FileOffset * 512);
-                parent.Children.Add(file);
-
-                using (var fstream = File.OpenRead(fpath))
-                {
-                    using (var br = new BinaryReader(fstream))
-                    {
-                        fstream.Position = file.StartPos;
-                        file.ScanStructure(br, null, null);
-                    }
-                }
-            }
-
-            return entry;
-        }
-
         private void WriteHeader(BinaryWriter bw)
         {
             var namesdata = GetHeaderNamesData();
@@ -1332,15 +1182,17 @@ namespace CodeWalker.GameFiles
             //find the smallest available hole from the list.
             uint found = 0;
             uint foundsize = 0xFFFFFFFF;
-            
-            for (int i = 1; i < allfiles.Count(); i++)
-            {
-                RpfFileEntry e1 = allfiles[i - 1];
-                RpfFileEntry e2 = allfiles[i];
 
-                uint e1cnt = GetBlockCount(e1.GetFileSize());
-                uint e1end = e1.FileOffset + e1cnt;
+            uint e1end = GetHeaderBlockCount();//start searching for space after the end of the header
+            uint e1next = e1end;
+
+            for (int i = 0; i < allfiles.Count(); i++)
+            {
+                RpfFileEntry e2 = allfiles[i];
+                uint e2cnt = GetBlockCount(e2.GetFileSize());
                 uint e2beg = e2.FileOffset;
+                e1end = e1next;
+                e1next = e2.FileOffset + e2cnt;
                 if ((e2beg > ignorestart) && (e1end < ignoreend))
                 {
                     continue; //this space is in the ignore area.
@@ -1596,21 +1448,50 @@ namespace CodeWalker.GameFiles
         }
 
 
-        public long GetDefragmentedFileSize()
+        public long GetDefragmentedFileSize(bool recursive = true)
         {
             //this represents the size the file would be when fully defragmented.
-            uint blockcount = GetHeaderBlockCount();
 
-            foreach (var entry in AllEntries)
+            if (!recursive)
             {
-                var fentry = entry as RpfFileEntry;
-                if (fentry != null)
-                {
-                    blockcount += GetBlockCount(fentry.GetFileSize());
-                }
-            }
+                uint blockcount = GetHeaderBlockCount();
 
-            return (long)blockcount * 512;
+
+                foreach (var entry in AllEntries)
+                {
+                    var fentry = entry as RpfFileEntry;
+                    if (fentry != null)
+                    {
+                        blockcount += GetBlockCount(fentry.GetFileSize());
+                    }
+                }
+
+                return (long)blockcount * 512;
+            }
+            else
+            {
+                uint blockcount = GetHeaderBlockCount();
+                long childRpfsSize = 0;
+
+                foreach (var entry in AllEntries)
+                {
+                    var fentry = entry as RpfFileEntry;
+                    if (fentry != null)
+                    {
+                        var childRpf = this.FindChildArchive(fentry);
+                        if (childRpf == null)
+                        {
+                            blockcount += GetBlockCount(fentry.GetFileSize());
+                        }
+                        else
+                        {
+                            childRpfsSize += childRpf.GetDefragmentedFileSize(true);
+                        }
+                    }
+                }
+
+                return (long)blockcount * 512 + childRpfsSize;
+            }
         }
 
 
@@ -1640,13 +1521,12 @@ namespace CodeWalker.GameFiles
 
             string fpath = gtafolder;
             fpath = fpath.EndsWith("\\") ? fpath : fpath + "\\";
-            fpath = fpath + relpath;
+            fpath = relpath.Contains(":") ? relpath : fpath + relpath;
 
-            //if (File.Exists(fpath))
-            //{
-
-            //    throw new Exception("File " + fpath + " already exists!");
-            //}
+            if (File.Exists(fpath))
+            {
+                throw new Exception("File " + fpath + " already exists!");
+            }
 
             File.Create(fpath).Dispose(); //just write a placeholder, will fill it out later
 
@@ -1730,7 +1610,7 @@ namespace CodeWalker.GameFiles
                 {
                     parent.InsertFileSpace(bw, entry);
 
-                    fstream.Position = parent.StartPos + entry.FileOffset * 512;
+                    fstream.Position = parent.StartPos + ((long)entry.FileOffset * 512);
 
                     file.WriteNewArchive(bw, encryption);
                 }
@@ -1738,6 +1618,206 @@ namespace CodeWalker.GameFiles
 
 
             return file;
+        }
+
+        public static RpfFileEntry CreateFile(RpfDirectoryEntry dir, string name, byte[] data, bool overwrite = true)
+        {
+            string namel = name.ToLowerInvariant();
+            if (overwrite)
+            {
+                foreach (var exfile in dir.Files)
+                {
+                    if (exfile.NameLower == namel)
+                    {
+                        //file already exists. delete the existing one first!
+                        //this should probably be optimised to just replace the existing one...
+                        //TODO: investigate along with ExploreForm.ReplaceSelected()
+                        DeleteEntry(exfile);
+                        break;
+                    }
+                }
+            }
+            //else fail if already exists..? items with the same name allowed?
+
+            RpfFile parent = dir.File;
+            string fpath = parent.GetPhysicalFilePath();
+            string rpath = dir.Path + "\\" + namel;
+            if (!File.Exists(fpath))
+            {
+                throw new Exception("Root RPF file " + fpath + " does not exist!");
+            }
+
+
+            RpfFileEntry entry = null;
+            uint len = (uint)data.Length;
+
+
+            bool isrpf = false;
+            bool isawc = false;
+            uint hdr = 0;
+            if (len >= 16)
+            {
+                hdr = BitConverter.ToUInt32(data, 0);
+            }
+
+            if (hdr == 0x37435352) //'RSC7'
+            {
+                //RSC header is present... import as resource
+                var rentry = new RpfResourceFileEntry();
+                var version = BitConverter.ToUInt32(data, 4);
+                rentry.SystemFlags = BitConverter.ToUInt32(data, 8);
+                rentry.GraphicsFlags = BitConverter.ToUInt32(data, 12);
+                rentry.FileSize = len;
+                if (len >= 0xFFFFFF)
+                {
+                    //just....why
+                    //FileSize = (buf[7] << 0) | (buf[14] << 8) | (buf[5] << 16) | (buf[2] << 24);
+                    data[7] = (byte)((len >> 0) & 0xFF);
+                    data[14] = (byte)((len >> 8) & 0xFF);
+                    data[5] = (byte)((len >> 16) & 0xFF);
+                    data[2] = (byte)((len >> 24) & 0xFF);
+                }
+
+                entry = rentry;
+            }
+
+            if (namel.EndsWith(".rpf") && (hdr == 0x52504637)) //'RPF7'
+            {
+                isrpf = true;
+            }
+            if (namel.EndsWith(".awc"))
+            {
+                isawc = true;
+            }
+
+            if (entry == null)
+            {
+                //no RSC7 header present, import as a binary file.
+                var compressed = (isrpf||isawc) ? data : CompressBytes(data);
+                var bentry = new RpfBinaryFileEntry();
+                bentry.EncryptionType = 0;//TODO: binary encryption
+                bentry.IsEncrypted = false;
+                bentry.FileUncompressedSize = (uint)data.Length;
+                bentry.FileSize = (isrpf||isawc) ? 0 : (uint)compressed.Length;
+                if (bentry.FileSize > 0xFFFFFF)
+                {
+                    bentry.FileSize = 0;
+                    compressed = data; 
+                    //can't compress?? since apparently FileSize>0 means compressed...
+                }
+                data = compressed;
+                entry = bentry;
+            }
+
+            entry.Parent = dir;
+            entry.File = parent;
+            entry.Path = rpath;
+            entry.Name = name;
+            entry.NameLower = name.ToLowerInvariant();
+            entry.NameHash = JenkHash.GenHash(name);
+            entry.ShortNameHash = JenkHash.GenHash(entry.GetShortNameLower());
+
+
+
+
+            foreach (var exfile in dir.Files)
+            {
+                if (exfile.NameLower == entry.NameLower)
+                {
+                    throw new Exception("File \"" + entry.Name + "\" already exists!");
+                }
+            }
+
+
+
+            dir.Files.Add(entry);
+
+
+            using (var fstream = File.Open(fpath, FileMode.Open, FileAccess.ReadWrite))
+            {
+                using (var bw = new BinaryWriter(fstream))
+                {
+                    parent.InsertFileSpace(bw, entry);
+                    long bbeg = parent.StartPos + ((long)entry.FileOffset * 512);
+                    long bend = bbeg + ((long)GetBlockCount(entry.GetFileSize()) * 512);
+                    fstream.Position = bbeg;
+                    fstream.Write(data, 0, data.Length);
+                    WritePadding(fstream, bend); //write 0's until the end of the block.
+                }
+            }
+
+
+            if (isrpf)
+            {
+                //importing a raw RPF archive. create the new RpfFile object, and read its headers etc.
+                RpfFile file = new RpfFile(name, rpath, data.LongLength);
+                file.Parent = parent;
+                file.ParentFileEntry = entry as RpfBinaryFileEntry;
+                file.StartPos = parent.StartPos + ((long)entry.FileOffset * 512);
+                parent.Children.Add(file);
+
+                using (var fstream = File.OpenRead(fpath))
+                {
+                    using (var br = new BinaryReader(fstream))
+                    {
+                        fstream.Position = file.StartPos;
+                        file.ScanStructure(br, null, null);
+                    }
+                }
+            }
+
+            return entry;
+        }
+
+
+        public static void RenameArchive(RpfFile file, string newname)
+        {
+            //updates all items in the RPF with the new path - no actual file changes made here
+            //(since all the paths are generated at runtime and not stored)
+
+            file.Name = newname;
+            file.NameLower = newname.ToLowerInvariant();
+            file.Path = GetParentPath(file.Path) + newname;
+            file.FilePath = GetParentPath(file.FilePath) + newname;
+
+            file.UpdatePaths();
+
+        }
+
+        public static void RenameEntry(RpfEntry entry, string newname)
+        {
+            //rename the entry in the RPF header... 
+            //also make sure any relevant child paths are updated...
+
+            string dirpath = GetParentPath(entry.Path);
+
+            entry.Name = newname;
+            entry.NameLower = newname.ToLowerInvariant();
+            entry.Path = dirpath + newname;
+
+            string sname = entry.GetShortNameLower();
+            JenkIndex.Ensure(sname);//could be anything... but it needs to be there
+            entry.NameHash = JenkHash.GenHash(newname);
+            entry.ShortNameHash = JenkHash.GenHash(sname);
+
+            RpfFile parent = entry.File;
+            string fpath = parent.GetPhysicalFilePath();
+
+            using (var fstream = File.Open(fpath, FileMode.Open, FileAccess.ReadWrite))
+            {
+                using (var bw = new BinaryWriter(fstream))
+                {
+                    parent.EnsureAllEntries();
+                    parent.WriteHeader(bw);
+                }
+            }
+
+            if (entry is RpfDirectoryEntry)
+            {
+                //a folder was renamed, make sure all its children's paths get updated
+                parent.UpdatePaths(entry as RpfDirectoryEntry);
+            }
+
         }
 
 
@@ -1803,21 +1883,79 @@ namespace CodeWalker.GameFiles
         }
 
 
-        public static bool EnsureValidEncryption(RpfFile file, Func<RpfFile, bool> confirm)
+        public static bool IsValidEncryption(RpfFile file, bool recursive = false)
+        {
+            if (file == null) return false;
+
+            if (file.Encryption != RpfEncryption.OPEN) return false;
+
+            var parent = file.Parent;
+            while (parent != null)
+            {
+                if (parent.Encryption != RpfEncryption.OPEN) return false;
+                parent = parent.Parent;
+            }
+
+            if (recursive && (file.Children != null))
+            {
+                var stack = new Stack<RpfFile>(file.Children);
+                while (stack.Count > 0)
+                {
+                    var child = stack.Pop();
+                    if (child == null) continue;
+                    if (child.Encryption != RpfEncryption.OPEN)
+                    {
+                        return false;
+                    }
+                    if (child.Children != null)
+                    {
+                        foreach (var cchild in child.Children)
+                        {
+                            stack.Push(cchild);
+                        }
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        public static bool EnsureValidEncryption(RpfFile file, Func<RpfFile, bool> confirm, bool recursive = false)
         {
             if (file == null) return false;
 
             //currently assumes OPEN is the valid encryption type.
             //TODO: support other encryption types!
 
-            bool needsupd = false;
+            var files = new List<RpfFile>();
+            if (recursive && (file.Children != null))
+            {
+                var stack = new Stack<RpfFile>(file.Children);
+                while (stack.Count > 0)
+                {
+                    var child = stack.Pop();
+                    if (child == null) continue;
+                    if (child.Encryption != RpfEncryption.OPEN)
+                    {
+                        files.Add(child);
+                    }
+                    if (child.Children != null)
+                    {
+                        foreach (var cchild in child.Children)
+                        {
+                            stack.Push(cchild);
+                        }
+                    }
+                }
+                files.Reverse();//the list is in parent>child order, needs to be in child>parent order here
+            }
+            var needsupd = (files.Count > 0);
             var f = file;
-            List<RpfFile> files = new List<RpfFile>();
             while (f != null)
             {
                 if (f.Encryption != RpfEncryption.OPEN)
                 {
-                    if (!confirm(f))
+                    if ((confirm != null) && !confirm(f))
                     {
                         return false;
                     }
@@ -1854,9 +1992,24 @@ namespace CodeWalker.GameFiles
         }
 
 
-        public static void Defragment(RpfFile file, Action<string, float> progress = null)
+        public static void Defragment(RpfFile file, Action<string, float> progress = null, bool recursive = true)
         {
             if (file?.AllEntries == null) return;
+
+            if (recursive)
+            {
+                foreach (var entry in file?.AllEntries) 
+                {
+                    if (entry is RpfFileEntry)
+                    {
+                        var childRpf = file.FindChildArchive(entry as RpfFileEntry);
+                        if (childRpf != null)
+                        {
+                            Defragment(childRpf, null, true);
+                        }
+                    }
+                }
+            }
 
             string fpath = file.GetPhysicalFilePath();
             using (var fstream = File.Open(fpath, FileMode.Open, FileAccess.ReadWrite))
@@ -1954,6 +2107,24 @@ namespace CodeWalker.GameFiles
                 dirpath = dirpath + "\\";
             }
             return dirpath;
+        }
+
+
+        private static bool IsValidPath(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return false;
+            if (path.Length > 500) return false; //a long path is most likely an attempt to crash CW, so skip it
+            var dirc = 0;
+            for (int i = 0; i < path.Length; i++)
+            {
+                var c = path[i];
+                if (c == ':') return false; //what kind of person puts this in a file name?
+                if (c == ';') return false;
+                if (c == '/') dirc++;
+                if (c == '\\') dirc++;
+            }
+            if (dirc > 20) return false;//20 levels deep.. are you mad?!?
+            return true;
         }
 
 

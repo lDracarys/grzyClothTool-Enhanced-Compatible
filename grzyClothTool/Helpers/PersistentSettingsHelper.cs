@@ -94,6 +94,26 @@ public class PersistentSettingsHelper
         }
     }
 
+    /// <summary>
+    /// The user's GTA V install folder. Stored here (JSON, keyed only by machine user) rather than
+    /// through CodeWalker's WinForms Settings.Default (System.Configuration ApplicationSettingsBase)
+    /// because that mechanism keys its user.config folder off the running assembly's identity/path -
+    /// which changes on every `dotnet publish -p:PublishSingleFile=true` build, silently orphaning
+    /// any previously-saved GTA folder. This JSON file has no such dependency.
+    /// </summary>
+    public string GtaFolder
+    {
+        get => _settings.GtaFolder ?? string.Empty;
+        set
+        {
+            if (_settings.GtaFolder != value)
+            {
+                _settings.GtaFolder = value;
+                SaveSettings();
+            }
+        }
+    }
+
     public string SettingsFilePath => _settingsFilePath;
 
     public List<RecentProject> RecentlyOpenedProjects
@@ -154,6 +174,7 @@ public class PersistentSettings
 {
     public bool IsFirstRun { get; set; } = true;
     public string MainProjectsFolder { get; set; } = string.Empty;
+    public string GtaFolder { get; set; } = string.Empty;
     public List<RecentProject> RecentlyOpenedProjects { get; set; } = [];
 }
 

@@ -773,7 +773,15 @@ public class GDrawable : INotifyPropertyChanged
         var yddFile = new YddFile();
         try
         {
-            await yddFile.LoadAsync(bytes);
+            // Uses CWHelper's shared gen9-flag lock - GetDrawableDetailsAsync runs concurrently for
+            // many drawables when a project loads, and RpfManager.IsGen9 is a single global static
+            // flag, so this must be serialized with every other place that touches it (previews,
+            // build) to avoid "illegal position!" resource parse errors from one load's flag value
+            // bleeding into another's.
+            using (CWHelper.ScopedYddGen9(FullFilePath))
+            {
+                await yddFile.LoadAsync(bytes);
+            }
         }
         catch (Exception ex)
         {
